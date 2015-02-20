@@ -5,6 +5,7 @@ module Arel
 
       def visit_Arel_Nodes_SelectStatement o, a
         o = order_hacks(o, a)
+        o = where_hacks(o, a)
 
         # if need to select first records without ORDER BY and GROUP BY and without DISTINCT
         # then can use simple ROWNUM in WHERE clause
@@ -104,6 +105,38 @@ module Arel
             Nodes::SqlLiteral.new("alias_#{i}__#{' DESC' if /\bdesc$/i === order}")
         end
         o
+      end
+
+      ###
+      # Hacks for the where clauses specific to Oracle
+      def where_hacks o, a
+        o.cores.each do |core|
+          core.wheres.each do |where|
+            where.each do |node|
+              next unless node.is_a?(Arel::Nodes::And)
+              node.children.map! do |child|
+                split_in_node(child)
+              end
+            end
+          end
+        end
+        o
+      end
+
+      MAX_IN_EXPRESSIONS = 1000
+
+      # If the node is an "in" expression which has too many values
+      # for Oracle to handle, then turn it into a union of smaller
+      # "in" expressions.
+      def split_in_node(node)
+        return node unless node.is_a?(Arel::Nodes::In)
+        return node unless node.right.size > MAX_IN_EXPRESSIONS
+        exprs = node.right.each_slice(MAX_IN_EXPRESSIONS).map do |right_nodes|
+          in_node = Arel::Nodes::In.new(node.left, right_nodes)
+          in_node.to_sql
+        end
+        expr = exprs.join(" OR ")
+        Arel::Nodes::Grouping.new(Arel::Nodes::SqlLiteral.new(expr))
       end
 
       # Split string by commas but count opening and closing brackets
